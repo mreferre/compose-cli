@@ -55,8 +55,35 @@ func (cs *aciComposeService) Up(ctx context.Context, project *types.Project, det
 	return createOrUpdateACIContainers(ctx, cs.ctx, groupDefinition)
 }
 
+func (cs aciComposeService) warnKeepVolumeOnDown(ctx context.Context, projectName string) error {
+	cgClient, err := login.NewContainerGroupsClient(cs.ctx.SubscriptionID)
+	if err != nil {
+		return err
+	}
+	cg, err := cgClient.Get(ctx, cs.ctx.ResourceGroup, projectName)
+	if err != nil {
+		return err
+	}
+	if cg.Volumes == nil {
+		return nil
+	}
+	for _, v := range *cg.Volumes {
+		if v.AzureFile.StorageAccountName == nil || v.AzureFile.ShareName == nil {
+			continue
+		}
+		fmt.Printf("WARNING: fileshare \"%s/%s\" will NOT be automatically deleted\n",
+			*v.AzureFile.StorageAccountName, *v.AzureFile.ShareName)
+	}
+	return nil
+}
+
 func (cs *aciComposeService) Down(ctx context.Context, project string) error {
 	logrus.Debugf("Down on project with name %q", project)
+
+	err := cs.warnKeepVolumeOnDown(ctx, project)
+	if err != nil {
+		return err
+	}
 
 	cg, err := deleteACIContainerGroup(ctx, cs.ctx, project)
 	if err != nil {

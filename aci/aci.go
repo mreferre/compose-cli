@@ -35,6 +35,7 @@ import (
 
 	"github.com/docker/compose-cli/aci/convert"
 	"github.com/docker/compose-cli/aci/login"
+	"github.com/docker/compose-cli/api/client"
 	"github.com/docker/compose-cli/api/containers"
 	"github.com/docker/compose-cli/context/store"
 	"github.com/docker/compose-cli/errdefs"
@@ -64,12 +65,59 @@ func createACIContainers(ctx context.Context, aciContext store.AciContext, group
 	return createOrUpdateACIContainers(ctx, aciContext, groupDefinition)
 }
 
+func autocreateFileshares(ctx context.Context, cg containerinstance.ContainerGroup, w progress.Writer) error {
+	if cg.Volumes == nil {
+		return nil
+	}
+	for _, v := range *cg.Volumes {
+		if v.AzureFile == nil || v.AzureFile.ShareName == nil || v.AzureFile.StorageAccountName == nil {
+			continue
+		}
+		accountName := *v.AzureFile.StorageAccountName
+		shareName := *v.AzureFile.ShareName
+		clt, err := client.New(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = clt.VolumeService().Inspect(ctx, fmt.Sprintf("%s/%s", accountName, shareName))
+		if err != nil { // Not found, autocreate fileshare
+			aciVolumeOpts := &VolumeCreateOptions{
+				Account: accountName,
+			}
+			fullShareName := fmt.Sprintf("%s/%s", accountName, shareName)
+			w.Event(progress.Event{
+				ID:         fullShareName,
+				Status:     progress.Working,
+				StatusText: "Automatically creating fileshare",
+			})
+			_, err = clt.VolumeService().Create(ctx, shareName, aciVolumeOpts)
+			if err != nil {
+				return err
+			}
+			w.Event(progress.Event{
+				ID:         fullShareName,
+				Status:     progress.Done,
+				StatusText: "Automatically created",
+			})
+		}
+	}
+	return nil
+}
+
 func createOrUpdateACIContainers(ctx context.Context, aciContext store.AciContext, groupDefinition containerinstance.ContainerGroup) error {
 	w := progress.ContextWriter(ctx)
 	containerGroupsClient, err := login.NewContainerGroupsClient(aciContext.SubscriptionID)
 	if err != nil {
 		return errors.Wrapf(err, "cannot get container group client")
 	}
+
+	if _, ok := groupDefinition.Tags[composeContainerTag]; ok {
+		err = autocreateFileshares(ctx, groupDefinition, w)
+		if err != nil {
+			return err
+		}
+	}
+
 	groupDisplay := "Group " + *groupDefinition.Name
 	w.Event(progress.Event{
 		ID:         groupDisplay,
