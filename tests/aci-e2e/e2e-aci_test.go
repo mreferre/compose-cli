@@ -632,20 +632,20 @@ func TestUpUpdate(t *testing.T) {
 			projectName     = "acidemo"
 		)
 
-		c.RunDockerCmd("volume", "create", "--storage-account", composeAccountName, fileshareName)
-
 		// Bootstrap volume
 		aciContext := store.AciContext{
 			SubscriptionID: sID,
 			Location:       location,
 			ResourceGroup:  groupID,
 		}
-		uploadTestFile(t, aciContext, composeAccountName, fileshareName, testFileName, testFileContent)
 
 		dnsLabelName := "nginx-" + groupID
 		fqdn := dnsLabelName + "." + location + ".azurecontainer.io"
 		// Name of Compose project is taken from current folder "acie2e"
 		c.RunDockerCmd("compose", "up", "-f", singlePortVolumesComposefile, "--domainname", dnsLabelName, "--project-name", projectName)
+
+		// Volume should be autocreated by the "compose up"
+		uploadTestFile(t, aciContext, composeAccountName, fileshareName, testFileName, testFileContent)
 
 		res := c.RunDockerCmd("ps")
 		out := lines(res.Stdout())
@@ -772,8 +772,11 @@ func TestUpUpdate(t *testing.T) {
 	})
 
 	t.Run("down", func(t *testing.T) {
-		c.RunDockerCmd("compose", "down", "--project-name", composeProjectName)
-		res := c.RunDockerCmd("ps")
+		res := c.RunDockerCmd("compose", "down", "--project-name", composeProjectName)
+		res.Assert(t, icmd.Expected{
+			Out: fmt.Sprintf("WARNING: fileshare \"%s/%s\" will NOT be automatically deleted", composeAccountName, fileshareName),
+		})
+		res = c.RunDockerCmd("ps")
 		out := lines(res.Stdout())
 		assert.Equal(t, len(out), 1)
 	})
