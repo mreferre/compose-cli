@@ -234,9 +234,15 @@ func (s sdk) StackExists(ctx context.Context, name string) (bool, error) {
 	return len(stacks.Stacks) > 0, nil
 }
 
-type uploadedTemplateFunc func(ctx context.Context, name string, url string) (string, error)
+type uploadedTemplateFunc func(body *string, url *string) (string, error)
+
+const cloudformationBytesLimit = 51200
 
 func (s sdk) withTemplate(ctx context.Context, name string, template []byte, region string, fn uploadedTemplateFunc) (string, error) {
+	if len(template) < cloudformationBytesLimit {
+		return fn(aws.String(string(template)), nil)
+	}
+
 	logrus.Debug("Create s3 bucket to store cloudformation template")
 	var configuration *s3.CreateBucketConfiguration
 	if region != "us-east-1" {
@@ -287,17 +293,18 @@ func (s sdk) withTemplate(ctx context.Context, name string, template []byte, reg
 		},
 	})
 
-	return fn(ctx, name, upload.Location)
+	return fn(nil, aws.String(upload.Location))
 }
 
 func (s sdk) CreateStack(ctx context.Context, name string, region string, template []byte) error {
 	logrus.Debug("Create CloudFormation stack")
 
-	stackID, err := s.withTemplate(ctx, name, template, region, func(ctx context.Context, name string, url string) (string, error) {
+	stackID, err := s.withTemplate(ctx, name, template, region, func(body *string, url *string) (string, error) {
 		stack, err := s.CF.CreateStackWithContext(ctx, &cloudformation.CreateStackInput{
 			OnFailure:        aws.String("DELETE"),
 			StackName:        aws.String(name),
-			TemplateURL:      aws.String(url),
+			TemplateBody:     body,
+			TemplateURL:      url,
 			TimeoutInMinutes: nil,
 			Capabilities: []*string{
 				aws.String(cloudformation.CapabilityCapabilityIam),
@@ -320,14 +327,15 @@ func (s sdk) CreateStack(ctx context.Context, name string, region string, templa
 
 func (s sdk) CreateChangeSet(ctx context.Context, name string, region string, template []byte) (string, error) {
 	logrus.Debug("Create CloudFormation Changeset")
+	update := fmt.Sprintf("Update%s", time.Now().Format("2006-01-02-15-04-05"))
 
-	changeset, err := s.withTemplate(ctx, name, template, region, func(ctx context.Context, name string, url string) (string, error) {
-		update := fmt.Sprintf("Update%s", time.Now().Format("2006-01-02-15-04-05"))
+	changeset, err := s.withTemplate(ctx, name, template, region, func(body *string, url *string) (string, error) {
 		changeset, err := s.CF.CreateChangeSetWithContext(ctx, &cloudformation.CreateChangeSetInput{
 			ChangeSetName: aws.String(update),
 			ChangeSetType: aws.String(cloudformation.ChangeSetTypeUpdate),
 			StackName:     aws.String(name),
-			TemplateBody:  aws.String(string(template)),
+			TemplateBody:  body,
+			TemplateURL:   url,
 			Capabilities: []*string{
 				aws.String(cloudformation.CapabilityCapabilityIam),
 			},
